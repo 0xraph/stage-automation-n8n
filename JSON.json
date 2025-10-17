@@ -1,0 +1,452 @@
+{
+  "name": "Scrapping Stage",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtMinute": 5
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1648,
+        1152
+      ],
+      "id": "470e4875-38e6-41ae-a5bb-11dfdeb4b0d3",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -704,
+        1296
+      ],
+      "id": "fdf8739f-dc41-4286-a7ae-09a54c447347",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "chatId": "=YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{$json.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Voir",
+                    "additionalFields": {
+                      "url": "={{$json.url}}"
+                    }
+                  },
+                  {
+                    "text": "Postuler",
+                    "additionalFields": {
+                      "callback_data": "={{\"APPLY|\" + $json.id_source}}"
+                    }
+                  },
+                  {
+                    "text": "Sauver",
+                    "additionalFields": {
+                      "callback_data": "={{\"SAVE|\" + $json.id_source}}"
+                    }
+                  },
+                  {
+                    "text": "Ignorer",
+                    "additionalFields": {
+                      "callback_data": "={{\"SKIP|\" + $json.id_source}}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "MarkdownV2"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -208,
+        1312
+      ],
+      "id": "e9bb635b-fabf-4de7-959a-63642208ff50",
+      "name": "Telegram",
+      "webhookId": "b005e167-f051-44de-9cef-3d7bd371d661",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        16,
+        1312
+      ],
+      "id": "27c65114-dd11-4a00-ae3c-1629530874f6",
+      "name": "Wait",
+      "webhookId": "e25afb6d-9526-4d76-ad91-edb2853bc43b"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node — Normalisation d'offres (sans require)\n * Sortie: items prêts pour Google Sheets\n */\n\n// ===== Options =====\nconst PREPARE_TELEGRAM = false;             // mets TRUE si tu veux préparer Telegram ici\nconst CHAT_ID = YOUR_TELEGRAM_CHAT_ID;\nconst USE_MARKDOWNV2 = true;\nconst TZ_OFFSET_MIN = 120; // Europe/Paris approx\n\n// Hash FNV-1a 64 bits (pure JS, pas de require)\nfunction fnv1a64(str = '') {\n  let h = 0xcbf29ce484222325n;\n  const p = 0x100000001b3n;\n  for (let i = 0; i < str.length; i++) {\n    h ^= BigInt(str.charCodeAt(i));\n    h = (h * p) & 0xffffffffffffffffn;\n  }\n  return h.toString(16).padStart(16, '0');\n}\n\n// Canonicalise l'URL (supprime trackers)\nfunction canon(u) {\n  try {\n    const x = new URL((u || '').trim());\n    x.hash = '';\n    [\n      'utm_source','utm_medium','utm_campaign','utm_term','utm_content',\n      'gclid','fbclid','mc_cid','mc_eid','hss_channel','hss_channel_landing','utm_id','utm_name'\n    ].forEach(k => x.searchParams.delete(k));\n    const qs = x.searchParams.toString();\n    return x.origin + x.pathname + (qs ? '?' + qs : '');\n  } catch {\n    return (u || '').trim();\n  }\n}\n\n// Score rapide calibré\nfunction scoreFrom(j) {\n  const t = [j.titre, j.description || j.description_full || ''].join(' ').toLowerCase();\n  let s = 0;\n  if (/stage/.test(t)) s += 25;\n  if (/6\\s*mois|six mois/.test(t)) s += 20;\n  if (/janv(ier)?\\s*2026|q1\\s*2026/.test(t)) s += 20;\n  if (/(luxe|horloger|horlogerie|joaillerie|watch)/.test(t)) s += 18;\n  if (/(business development|bizdev|sales|vente|crm)/.test(t)) s += 12;\n  if (/(logistique|supply|op(é|e)rations)/.test(t)) s += 10;\n  if (/alternance|apprentissage/i.test(t)) s -= 40;\n  return s;\n}\n\nfunction escMdV2(s = '') { return String(s).replace(/([_*\\[\\]()~`>#+\\-=|{}.!\\\\])/g, '\\\\$1'); }\n\nfunction parseLocation(s = '') {\n  const parts = s.split(',').map(x => x.trim()).filter(Boolean);\n  return { ville: parts[0] || '', pays: parts.length > 1 ? parts[parts.length - 1] : '' };\n}\n\nfunction normalizeContrat(s = '') {\n  const t = s.toLowerCase();\n  if (/(stage|intern)/.test(t)) return 'Stage';\n  if (/(alternance|apprentissage)/.test(t)) return 'Alternance';\n  if (/(cdi)/.test(t)) return 'CDI';\n  if (/(cdd|temporaire|intérim)/.test(t)) return 'CDD';\n  return s || 'Stage';\n}\n\nfunction parseRelativeDate(fr = '') {\n  const str = fr.toLowerCase().trim();\n  const now = Date.now();\n  const m = str.match(/il y a\\s+(\\d+)\\s+(minute|minutes|heure|heures|jour|jours|semaine|semaines|mois|an|ans)/);\n  let deltaMs = 0;\n  if (m) {\n    const n = parseInt(m[1], 10);\n    const unit = m[2];\n    if (/minute/.test(unit)) deltaMs = n * 60 * 1000;\n    else if (/heure/.test(unit)) deltaMs = n * 3600 * 1000;\n    else if (/jour/.test(unit)) deltaMs = n * 24 * 3600 * 1000;\n    else if (/semaine/.test(unit)) deltaMs = n * 7 * 24 * 3600 * 1000;\n    else if (/mois/.test(unit)) deltaMs = n * 30 * 24 * 3600 * 1000;\n    else if (/an|ans/.test(unit)) deltaMs = n * 365 * 24 * 3600 * 1000;\n    const ts = new Date(now - deltaMs);\n    ts.setMinutes(ts.getMinutes() - ts.getTimezoneOffset() + TZ_OFFSET_MIN);\n    return ts.toISOString();\n  }\n  if (/aujourd/.test(str)) return new Date(now).toISOString();\n  if (/hier/.test(str)) return new Date(now - 24 * 3600 * 1000).toISOString();\n  return '';\n}\n\nfunction short(s = '', max = 300) {\n  const t = String(s).replace(/\\s+/g, ' ').trim();\n  return t.length <= max ? t : t.slice(0, max - 1).trim() + '…';\n}\n\n// Récup jobs depuis input n8n\nconst raw = $input.all().map(i => i.json);\nconst jobs = (raw.length === 1 && Array.isArray(raw[0])) ? raw[0] : raw;\n\nconst seen = new Set();\nconst out = [];\n\nfor (const j0 of jobs) {\n  const j = { ...j0 };\n\n  j.url = canon(j.url || '');\n  j.entreprise = (j.entreprise || '').trim();\n  j.titre = (j.titre || '').trim();\n  j.localisation = (j.localisation || '').trim();\n  j.type_contrat = normalizeContrat(j.type_contrat || j.type || '');\n  j.description_full = j.description_full || j.description || '';\n  j.source = (j.source || '').trim() || 'unknown';\n\n  if (!j.url || !j.titre || !j.entreprise) continue;\n\n  // ID stable + dédup (FNV-1a 64)\n  const id = fnv1a64(`${j.url}|${j.titre}`);\n  if (seen.has(id)) continue;\n  seen.add(id);\n\n  const { ville, pays } = parseLocation(j.localisation);\n  let source_domain = '';\n  try { source_domain = new URL(j.url).hostname.replace(/^www\\./, ''); } catch {}\n\n  const date_publi_iso = parseRelativeDate(j.date_publi || '');\n  const score_fit = j.score_fit ?? scoreFrom(j);\n  const statut = j.statut || 'à_cibler';\n\n  const row = {\n    id_source: id,\n    source: j.source,\n    source_domain,\n    entreprise: j.entreprise,\n    titre: j.titre,\n    localisation: j.localisation,\n    ville,\n    pays,\n    url: j.url,\n    date_publi: j.date_publi || '',\n    date_publi_iso,\n    type_contrat: j.type_contrat,\n    score_fit,\n    statut,\n    description_short: short(j.description_full, 300),\n  };\n\n  if (PREPARE_TELEGRAM) {\n    const safeCompany = USE_MARKDOWNV2 ? escMdV2(j.entreprise) : j.entreprise;\n    const safeTitle   = USE_MARKDOWNV2 ? escMdV2(j.titre)       : j.titre;\n    const safeLoc     = USE_MARKDOWNV2 ? escMdV2(j.localisation): j.localisation;\n    const safeUrl     = USE_MARKDOWNV2 ? escMdV2(j.url)         : j.url;\n    row.chat_id = CHAT_ID;\n    row.telegram_text = USE_MARKDOWNV2\n      ? `*${safeCompany} — ${safeTitle}*\\n${safeLoc}\\nScore: ${score_fit}\\n${safeUrl}`\n      : `${j.entreprise} — ${j.titre}\\n${j.localisation}\\nScore: ${score_fit}\\n${j.url}`;\n    row.telegram_reply_markup = JSON.stringify({\n      inline_keyboard: [[\n        { text: 'Voir', url: j.url },\n        { text: 'Postuler', callback_data: `APPLY|${id}` },\n        { text: 'Sauver',  callback_data: `SAVE|${id}` },\n        { text: 'Ignorer', callback_data: `SKIP|${id}` }\n      ]]\n    });\n  }\n\n  out.push({ json: row });\n}\n\n// Trie par score décroissant\nout.sort((a, b) => b.json.score_fit - a.json.score_fit);\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        1024
+      ],
+      "id": "7b8d9e26-e482-442a-ae71-61a0348dc363",
+      "name": "normalisateur",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\nfor (const i of $input.all()) {\n  const r = i.json;\n  const jobs = r.jobs_results || [];\n  jobs.forEach(j => {\n    out.push({\n      json: {\n        source: 'serpapi',\n        url: j.apply_options?.[0]?.link || j.job_apply_link || j.link || j.job_highlights?.[0],\n        entreprise: j.company_name || '',\n        titre: j.title || '',\n        localisation: j.location || '',\n        description: (j.description || '').slice(0, 5000),\n        date_publi: j.detected_extensions?.posted_at || j.extensions?.[0] || '',\n        type_contrat: 'Stage'\n      }\n    });\n  });\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        1152
+      ],
+      "id": "be54b740-8862-4e96-aac9-2a47d27cda3f",
+      "name": "Clean data"
+    },
+    {
+      "parameters": {
+        "content": "## Stockage des offres\n",
+        "height": 240,
+        "width": 520,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -960,
+        944
+      ],
+      "typeVersion": 1,
+      "id": "cff645e6-438a-4d2e-b470-7541d8697e67",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Function/Code — prepare_telegram (MarkdownV2, sans URL dans le texte)\n * Entrée: items normalisés { url, entreprise, titre, localisation, description|description_full, id_source? }\n * Sortie: { id_source, score_fit, chat_id, text, reply_markup, url, ... }\n */\n\n// Mets TON chat_id (pas l'id du bot)\nconst CHAT_ID = YOUR_TELEGRAM_CHAT_ID;\n\n// Hash FNV-1a 64 bits (pure JS, pas de require)\nfunction fnv1a64(str = '') {\n  let h = 0xcbf29ce484222325n;\n  const p = 0x100000001b3n;\n  for (let i = 0; i < str.length; i++) {\n    h ^= BigInt(str.charCodeAt(i));\n    h = (h * p) & 0xffffffffffffffffn;\n  }\n  return h.toString(16).padStart(16, '0');\n}\n\n// Échappement MarkdownV2\nfunction escMdV2(s = '') {\n  return String(s).replace(/([_*\\[\\]()~`>#+\\-=|{}.!\\\\])/g, '\\\\$1');\n}\n\n// Scoring simple, calé sur ton use-case\nfunction score(j) {\n  const t = [j.titre || '', j.description_full || j.description || ''].join(' ').toLowerCase();\n  let s = 0;\n  if (/stage/.test(t)) s += 25;\n  if (/6\\s*mois|six mois/.test(t)) s += 20;\n  if (/janv(ier)?\\s*2026|q1\\s*2026/.test(t)) s += 20;\n  if (/(luxe|horloger|horlogerie|joaillerie|watch)/.test(t)) s += 18;\n  if (/(business development|bizdev|sales|vente|crm)/.test(t)) s += 12;\n  if (/(logistique|supply|op(é|e)rations)/.test(t)) s += 10;\n  if (/alternance|apprentissage/i.test(t)) s -= 40;\n  return s;\n}\n\nconst seen = new Set();\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n\n  const url = (j.url || '').trim();\n  const titre = (j.titre || '').trim();\n  const entreprise = (j.entreprise || '').trim();\n  const localisation = (j.localisation || '').trim();\n  if (!url || !titre || !entreprise) continue;\n\n  // id stable (priorité à j.id_source s'il existe)\n  const id = j.id_source || fnv1a64(`${url}|${titre}`);\n  if (seen.has(id)) continue;\n  seen.add(id);\n\n  const s = Number.isFinite(j.score_fit) ? j.score_fit : score(j);\n\n  // Texte SANS URL (les boutons porteront le lien)\n  const safeCompany = escMdV2(entreprise);\n  const safeTitle   = escMdV2(titre);\n  const safeLoc     = escMdV2(localisation);\n  const text = `*${safeCompany} — ${safeTitle}*` + (safeLoc ? `\\n${safeLoc}` : '') + `\\nScore: ${s}`;\n\n  // Boutons inline\n  const reply_markup = {\n    inline_keyboard: [[\n      { text: 'Voir', url: url },\n      { text: 'Postuler', callback_data: `APPLY|${id}` },\n      { text: 'Sauver',  callback_data: `SAVE|${id}` },\n      { text: 'Ignorer', callback_data: `SKIP|${id}` }\n    ]]\n  };\n\n  out.push({\n    json: {\n      ...j,\n      id_source: id,\n      score_fit: s,\n      chat_id: CHAT_ID,\n      text,\n      reply_markup,\n      url // on garde l'URL pour le bouton \"Voir\"\n    }\n  });\n}\n\n// Top 15 par score\nout.sort((a, b) => b.json.score_fit - a.json.score_fit);\nreturn out.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -928,
+        1296
+      ],
+      "id": "4dd04b1a-fe38-4bc8-84e5-cfb5b8ab2306",
+      "name": "Prepare Telegram"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "37ef8269-20f9-4208-bad5-b54381ce23e2",
+              "name": "=chat_id",
+              "value": "={{$json.chat_id}}",
+              "type": "string"
+            },
+            {
+              "id": "27962c7e-d25e-48d5-aadd-650a33b59fb9",
+              "name": "text",
+              "value": "={{$json.text}}",
+              "type": "string"
+            },
+            {
+              "id": "8452656f-944f-440e-8720-6fbb4ac424e5",
+              "name": "reply_markup",
+              "value": "={{$json.reply_markup}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -464,
+        1312
+      ],
+      "id": "e25f01e8-7ed8-4c1f-b29e-a8a456dc8f9d",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "content": "## Envoi les offres par Telegram",
+        "height": 304,
+        "width": 1168,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -976,
+        1216
+      ],
+      "typeVersion": 1,
+      "id": "297de572-1192-4127-a4b7-681529d77889",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "Stage_2026",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_SHEET_ID/edit"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Stage",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_SHEET_ID/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id_source": "={{ $json.id_source }}",
+            "url": "={{ $json.url }}",
+            "entreprise": "={{ $json.entreprise }}",
+            "titre": "={{ $json.titre }}",
+            "localisation": "={{ $json.localisation }}",
+            "source": "={{ $json.source }}",
+            "date_publi": "={{ $json.date_publi }}",
+            "type_contrat": "={{ $json.type_contrat }}",
+            "description": "={{ $json.description }}",
+            "statut": "={{ $json.statut }}",
+            "score_fit": "={{ $json.score_fit }}"
+          },
+          "matchingColumns": [
+            "id_source"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -640,
+        1024
+      ],
+      "id": "0c274a6c-4e30-4dbb-9cd7-9fbc16735062",
+      "name": "Google Sheets3",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Récupération des Offres\n### Tout les jours à 8h05",
+        "height": 260,
+        "width": 640,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1712,
+        1056
+      ],
+      "typeVersion": 1,
+      "id": "17476a29-1d98-4e7d-895e-78f2eab36555",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "url": "https://serpapi.com/search.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "serpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google_jobs"
+            },
+            {
+              "name": "q",
+              "value": "stage (luxe OR horlogerie OR \"business development\" OR logistique) \"janvier 2026\""
+            },
+            {
+              "name": "location",
+              "value": "Paris, Île-de-France"
+            },
+            {
+              "name": "hl",
+              "value": "fr"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1424,
+        1152
+      ],
+      "id": "9fd95109-9cc8-424a-a771-5e4b381a8808",
+      "name": "Google Search",
+      "credentials": {
+        "serpApi": {
+          "id": "YOUR_SERPAPI_CREDENTIAL_ID",
+          "name": "SerpApi account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Google Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "normalisateur": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "normalisateur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Telegram": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Search": {
+      "main": [
+        [
+          {
+            "node": "Clean data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "WILL_BE_REGENERATED",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "YOUR_N8N_INSTANCE_ID"
+  },
+  "id": "WILL_BE_REGENERATED",
+  "tags": []
+}

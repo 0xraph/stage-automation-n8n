@@ -1,0 +1,337 @@
+{
+  "name": "Création lettre",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.statut }}",
+              "rightValue": "en cours",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [-432, 208],
+      "id": "5ca12fdc-2f7c-49b2-bfb4-8bf1635f5136",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [672, 560],
+      "id": "50a4e4c2-2f67-48c4-bbe3-70ac3acd708f",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tu vas rédiger une lettre de motivation à partir des données ci-dessous et renvoyer UNIQUEMENT un objet JSON valide conforme au schéma \"CoverLetter\".\n\n==================== DONNÉES ====================\n\n{\n  \"job\": {{ JSON.stringify($json.output) }},\n  \"cv\": {\n    \"text\": {{ JSON.stringify((($json.cv_text || '').replace(/\\u0000/g,'')).slice(0,30000)) }},\n    \"filename\": {{ JSON.stringify($json.filename || null) }}\n  }\n}\n\n==================== INSTRUCTIONS ====================\n\n1) Produire UNE lettre de motivation en FRANÇAIS (≈ 250–350 mots)\n2) Champs obligatoires : company, job_title, language=\"fr\", letter_markdown, keywords_used\n3) Structure : Salutation, Accroche, 1-2 paragraphes preuves CV, Motivation, CTA, Signature\n4) Intégrer naturellement disponibilité/durée/mode si fournis\n5) 3-5 preuves concrètes issues du CV\n6) Pas de copier/coller annonce, pas de coordonnées perso\n7) Normaliser mots-clés, pas de clichés\n8) Retourner UNIQUEMENT le JSON conforme au schéma CoverLetter",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Tu es un assistant de rédaction spécialisé en lettres de motivation B2B. Ton rôle est de produire UNE lettre en FRANÇAIS (≈250-350 mots) alignée sur l'offre et le CV, puis retourner EXCLUSIVEMENT un JSON conforme au schéma CoverLetter. Règles: jamais inventer d'expérience, pas de coordonnées perso, ton professionnel, orienté impact."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [672, 384],
+      "id": "2e078632-5bfb-4932-94ac-b029f96241a0",
+      "name": "Rédaction LM"
+    },
+    {
+      "parameters": {
+        "sendTo": "your.email@example.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1456, 384],
+      "id": "44e7b779-142d-4279-a314-f6ceaee08830",
+      "name": "Send a message",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-624, 208],
+      "id": "a40adacd-0c1f-4555-8d9e-8f0a7b179fb0",
+      "name": "Google Sheets",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/* Code de normalisation des offres - voir fichier complet pour détails */\nfunction transform(row) {\n  // Normalisation dates, localisation, contacts, etc.\n  return {\n    id_source: row.id_source,\n    url: row.url,\n    entreprise: row.entreprise,\n    titre: row.titre,\n    description: row.description,\n    // ... autres champs normalisés\n  };\n}\n\nconst items = $input.all();\nconst out = items.map(({ json }) => {\n  try {\n    return { json: transform(json) };\n  } catch (e) {\n    return { json: { ...json, _error: `transform_failed: ${String(e)}` } };\n  }\n});\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-240, 208],
+      "id": "6b56e75f-60ec-4836-8679-7ff51d037bfb",
+      "name": "Normalisation"
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.1,
+          "topP": 1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [0, 272],
+      "id": "0b4b3b5b-350a-44e7-9276-927b45204753",
+      "name": "OpenRouter Chat Model Keywords",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-832, 208],
+      "id": "bfbc5738-473a-4168-afb7-82d68886714d",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyse l'offre ci-dessous et rends exclusivement un JSON valide conforme à schema_json.\n\nContexte:\nsource: {{ $json.id_source }}\nurl: {{ $json.url }}\nentreprise: {{ $json.entreprise }}\ntitre: {{ $json.titre }}\nlocalisation: {{ $json.localisation }}\n\nTexte intégral:\n<<<\n{{ $json.description }}\n>>>\n\nRappels: Respecte les énumérations autorisées, si l'info n'apparaît pas: null/[], listes max 12, pas de texte hors JSON.",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "Tu extrais des offres un JSON strict. Règles: JSON uniquement, aucun texte avant/après. Si info absente: null. Limite 12 éléments par liste. Français intégral. Normalisations: type_contrat (Stage/Alternance/CDI/CDD), remote_mode (Onsite/Hybrid/Remote), seniorite (Stagiaire/Junior/Senior). Dates YYYY-MM-DD. Ne renvoie AUCUN champ hors schéma."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [0, 96],
+      "id": "b52501c0-134a-4385-843f-064e135e223f",
+      "name": "Récup keyword"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"JobPostingNormalized\",\n  \"type\": \"object\",\n  \"required\": [\"source\", \"url\", \"entreprise\", \"titre\"],\n  \"properties\": {\n    \"source\": {\"type\": [\"string\", \"null\"]},\n    \"url\": {\"type\": \"string\", \"format\": \"uri\"},\n    \"entreprise\": {\"type\": [\"string\", \"null\"]},\n    \"titre\": {\"type\": [\"string\", \"null\"]},\n    \"localisation\": {\"type\": [\"string\", \"null\"]},\n    \"type_contrat\": {\"type\": [\"string\", \"null\"], \"enum\": [\"stage\", \"cdi\", \"cdd\", \"alternance\", null]},\n    \"description\": {\"type\": [\"string\", \"null\"]},\n    \"competences\": {\"type\": [\"array\", \"null\"], \"items\": {\"type\": \"string\"}},\n    \"langues\": {\"type\": [\"array\", \"null\"]},\n    \"remote_mode\": {\"type\": [\"string\", \"null\"], \"enum\": [\"on_site\", \"hybrid\", \"remote\", null]}\n  }\n}",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [96, 272],
+      "id": "4f0d000e-7580-4945-8f04-51cf542c4575",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"CoverLetter\",\n  \"type\": \"object\",\n  \"required\": [\"company\", \"job_title\", \"language\", \"letter_markdown\", \"keywords_used\"],\n  \"properties\": {\n    \"company\": {\"type\": [\"string\", \"null\"]},\n    \"job_title\": {\"type\": [\"string\", \"null\"]},\n    \"language\": {\"type\": \"string\", \"enum\": [\"fr\"]},\n    \"email_subject\": {\"type\": [\"string\", \"null\"]},\n    \"keywords_used\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"minItems\": 5, \"maxItems\": 12},\n    \"cv_snippets_used\": {\"type\": [\"array\", \"null\"], \"items\": {\"type\": \"string\"}},\n    \"word_count\": {\"type\": [\"integer\", \"null\"], \"minimum\": 120, \"maximum\": 500},\n    \"letter_markdown\": {\"type\": \"string\", \"minLength\": 120},\n    \"signature_name\": {\"type\": [\"string\", \"null\"]}\n  }\n}",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [816, 560],
+      "id": "f7a8564b-8c6a-49d2-8772-52c2d3fe56d7",
+      "name": "Structured Output Parser LM"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "YOUR_CV_FILE_ID",
+          "mode": "list",
+          "cachedResultName": "VotreCV.pdf"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-480, 576],
+      "id": "f7120100-0a3e-4f29-ab3b-1cbce556b9ee",
+      "name": "Télécharger CV",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "YOUR_GOOGLE_DRIVE_CREDENTIAL_ID",
+          "name": "Google Drive Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-304, 576],
+      "id": "fb3c0d7e-33a3-4acc-9218-bc455abbf96b",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "function scrubPII(s) {\n  return s\n    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi, '[email]')\n    .replace(/(?:(?:\\+?\\d)[\\s().-]*){9,}/g, '[téléphone]')\n    .replace(/linkedin\\.com\\/in\\/\\S+/gi, '[linkedin]');\n}\n\nconst raw = ($json.text || '').replace(/\\u0000/g, '');\nconst normalized = raw\n  .replace(/\\r/g, '\\n')\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst truncated = normalized.slice(0, 30000);\nconst cleaned = scrubPII(truncated);\n\nreturn [{\n  json: {\n    cv_text: cleaned,\n    filename: 'VotreCV.pdf',\n    file_id: $json.file_id || null,\n    modifiedTime: $json.info?.ModDate || null\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-128, 576],
+      "id": "92633ccb-4c8e-44de-ac74-36b46dbf443e",
+      "name": "CV Clean"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [464, 384],
+      "id": "19897271-7574-47c0-b0e0-17baa64aefe0",
+      "name": "Merge"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [1248, 384],
+      "id": "4293abff-7a33-4c98-a540-30fc8d71968b",
+      "name": "Create a document",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "YOUR_GOOGLE_DOCS_CREDENTIAL_ID",
+          "name": "Google Docs Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = items[0].json.output;\n\nconst company = o.company || 'Entreprise';\nconst job = o.job_title || 'Poste';\nconst subject = o.email_subject || `Candidature — ${job} — ${company}`;\n\nlet letter = (o.letter_markdown || '').trim();\nconst signature = (o.signature_name || '').trim();\n\nconst fileBase = `${company} - ${job} - Lettre - Votre Nom`;\nreturn [{\n  json: {\n    company, job, subject, letter, signature, fileBase\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1024, 384],
+      "id": "8c86e620-efac-4e0c-9fbd-aad6bfee1dde",
+      "name": "Format Output"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Filter": {
+      "main": [[{"node": "Normalisation", "type": "main", "index": 0}]]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [[{"node": "Rédaction LM", "type": "ai_languageModel", "index": 0}]]
+    },
+    "Rédaction LM": {
+      "main": [[{"node": "Format Output", "type": "main", "index": 0}]]
+    },
+    "Google Sheets": {
+      "main": [[{"node": "Filter", "type": "main", "index": 0}]]
+    },
+    "Normalisation": {
+      "main": [[{"node": "Récup keyword", "type": "main", "index": 0}]]
+    },
+    "OpenRouter Chat Model Keywords": {
+      "ai_languageModel": [[{"node": "Récup keyword", "type": "ai_languageModel", "index": 0}]]
+    },
+    "When Executed by Another Workflow": {
+      "main": [[{"node": "Google Sheets", "type": "main", "index": 0}, {"node": "Télécharger CV", "type": "main", "index": 0}]]
+    },
+    "Récup keyword": {
+      "main": [[{"node": "Merge", "type": "main", "index": 0}]]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [[{"node": "Récup keyword", "type": "ai_outputParser", "index": 0}]]
+    },
+    "Structured Output Parser LM": {
+      "ai_outputParser": [[{"node": "Rédaction LM", "type": "ai_outputParser", "index": 0}]]
+    },
+    "Télécharger CV": {
+      "main": [[{"node": "Extract from File", "type": "main", "index": 0}]]
+    },
+    "Extract from File": {
+      "main": [[{"node": "CV Clean", "type": "main", "index": 0}]]
+    },
+    "CV Clean": {
+      "main": [[{"node": "Merge", "type": "main", "index": 1}]]
+    },
+    "Merge": {
+      "main": [[{"node": "Rédaction LM", "type": "main", "index": 0}]]
+    },
+    "Create a document": {
+      "main": [[{"node": "Send a message", "type": "main", "index": 0}]]
+    },
+    "Format Output": {
+      "main": [[{"node": "Create a document", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "WILL_BE_REGENERATED",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "YOUR_N8N_INSTANCE_ID"
+  },
+  "id": "WILL_BE_REGENERATED",
+  "tags": []
+}
+    
